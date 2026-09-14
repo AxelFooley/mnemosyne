@@ -60,6 +60,11 @@ def append_recall_provenance(db_path: Any, query: str,
     `results` carries only id/tier/score/importance/timestamp (no
     content preview). Never raises: failures are logged at debug
     level and swallowed so recall behavior is unaffected.
+
+    Privacy note: the JSONL file is plaintext on local disk and
+    stores up to 200 chars of raw query text per call. Operators
+    control its filesystem permissions and deletion; no retention
+    or rotation policy is imposed here.
     """
     try:
         record = {
@@ -96,7 +101,9 @@ def read_recall_provenance(db_path: Any, limit: int = 20) -> List[Dict]:
         logger.debug("recall provenance read failed (non-fatal)", exc_info=True)
         return []
     records: List[Dict] = []
-    for line in lines[-max(0, int(limit)):]:
+    # limit<=0 must yield nothing: lines[-0:] is the WHOLE list (-0 == 0).
+    n = max(0, int(limit))
+    for line in (lines[-n:] if n else []):
         try:
             records.append(json.loads(line))
         except Exception:

@@ -7876,6 +7876,7 @@ class BeamMemory:
                importance_weight: float = None,
                explain: bool = False,
                _cross_session: Optional[bool] = None,
+               _skip_provenance: bool = False,
                _resolved_weights: Optional[_RecallWeightSnapshot] = None,
                exclude_captures: Optional[ExclusionSnapshot] = None) -> List[Dict]:
         """
@@ -9306,7 +9307,10 @@ class BeamMemory:
         # toggle without rebuilding BeamMemory. append_recall_provenance
         # never raises; the default is OFF so no surprise disk writes.
         # Linear path only: enhanced/polyphonic return before this point.
-        if os.environ.get("MNEMOSYNE_RECALL_PROVENANCE", "0") == "1":
+        # Internal delegation (recall_enhanced) passes _skip_provenance=True
+        # so its expanded query + doubled top_k are not mislogged.
+        if (not _skip_provenance
+                and os.environ.get("MNEMOSYNE_RECALL_PROVENANCE", "0") == "1"):
             append_recall_provenance(str(self.db_path), query, final_results, top_k)
 
         return final_results
@@ -9608,6 +9612,7 @@ class BeamMemory:
             top_k=top_k * 2,
             _cross_session=runtime.cross_session,
             _resolved_weights=weight_snapshot,
+            _skip_provenance=True,
             **kwargs,
         )
         if explain:
