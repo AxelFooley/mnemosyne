@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from mnemosyne.core._connection_gc import collect_connection_cycles
 from mnemosyne.core.config import resolve_beam_runtime
 from mnemosyne.core.journal import journal_mode
+from mnemosyne.core.recall_provenance import append_recall_provenance
 
 logger = logging.getLogger(__name__)
 from datetime import datetime, timedelta, timezone
@@ -9298,6 +9299,15 @@ class BeamMemory:
                 "results": final_results,
                 "explain": _explain_trace.to_dict(),
             }
+
+        # [Recall provenance] Persistent query->result-ids audit line
+        # (JSONL next to the db). Opt-in via env flag, read per call
+        # (same pattern as the polyphonic flag above) so operators can
+        # toggle without rebuilding BeamMemory. append_recall_provenance
+        # never raises; the default is OFF so no surprise disk writes.
+        # Linear path only: enhanced/polyphonic return before this point.
+        if os.environ.get("MNEMOSYNE_RECALL_PROVENANCE", "0") == "1":
+            append_recall_provenance(str(self.db_path), query, final_results, top_k)
 
         return final_results
 
