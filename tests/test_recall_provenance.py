@@ -170,6 +170,26 @@ def test_enhanced_recall_delegation_writes_no_provenance_line(
     assert not _provenance_file(temp_db).exists()
 
 
+def test_enhanced_recall_passthrough_writes_provenance_line(
+        temp_db, monkeypatch):
+    """With MNEMOSYNE_ENHANCED_RECALL unset, recall_enhanced() is a plain
+    passthrough into recall() WITHOUT _skip_provenance -- the caller's
+    request flows through the linear path, so provenance IS logged."""
+    monkeypatch.delenv("MNEMOSYNE_ENHANCED_RECALL", raising=False)
+    monkeypatch.setenv("MNEMOSYNE_RECALL_PROVENANCE", "1")
+    beam = BeamMemory(session_id="prov-g", db_path=temp_db)
+    beam.remember("pluto eta provenance fact seven", source="test")
+
+    results = beam.recall_enhanced(
+        "pluto", top_k=5,
+        use_intent=False, use_synonyms=False, use_weibull=False, use_mmr=False,
+    )
+    assert results
+    assert _provenance_file(temp_db).exists()
+    records = read_recall_provenance(temp_db, limit=1)
+    assert records and records[0]["query"] == "pluto"
+
+
 def test_flag_read_per_call(temp_db, monkeypatch):
     """The flag is consulted on every recall call, not cached at init."""
     monkeypatch.delenv("MNEMOSYNE_RECALL_PROVENANCE", raising=False)
