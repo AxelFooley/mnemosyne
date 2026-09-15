@@ -9302,11 +9302,14 @@ class BeamMemory:
             }
 
         # [Recall provenance] Persistent query->result-ids audit line
-        # (JSONL next to the db). Opt-in via env flag, read per call
-        # (same pattern as the polyphonic flag above) so operators can
-        # toggle without rebuilding BeamMemory. append_recall_provenance
-        # never raises; the default is OFF so no surprise disk writes.
-        # Linear path only: enhanced/polyphonic return before this point.
+        # (JSONL at <db>.recall_provenance.jsonl, one file per db).
+        # Opt-in via env flag, read per call (same pattern as the
+        # polyphonic flag above) so operators can toggle without
+        # rebuilding BeamMemory. append_recall_provenance never raises;
+        # the default is OFF so no surprise disk writes. explain=True
+        # intentionally excluded: its trace object above is already
+        # the audit surface for that call. Linear path only:
+        # enhanced/polyphonic return before this point.
         # Internal delegation (recall_enhanced) passes _skip_provenance=True
         # so its expanded query + doubled top_k are not mislogged.
         if (not _skip_provenance

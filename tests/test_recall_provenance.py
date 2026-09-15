@@ -2,19 +2,24 @@
 Tests for persistent recall provenance logging (mnemosyne/core/recall_provenance.py).
 
 When MNEMOSYNE_RECALL_PROVENANCE=1, BeamMemory.recall() appends one JSONL
-line per call next to the db, recording query + returned ids/scores. The
-flag is read per call; default OFF means no file is ever created.
+line per call to <db>.recall_provenance.jsonl (one file per database),
+recording query + returned ids/scores. The flag is read per call; default
+OFF means no file is ever created.
 """
 
 import json
 import tempfile
+import threading
+from collections import Counter
 from pathlib import Path
 
 import pytest
 
+from mnemosyne.core import recall_provenance as rp
 from mnemosyne.core.beam import BeamMemory
 from mnemosyne.core.recall_provenance import (
     append_recall_provenance,
+    cleanup_orphaned_provenance,
     read_recall_provenance,
 )
 
@@ -27,7 +32,7 @@ def temp_db():
 
 
 def _provenance_file(db_path: Path) -> Path:
-    return db_path.parent / "recall_provenance.jsonl"
+    return Path(str(db_path) + ".recall_provenance.jsonl")
 
 
 def _read_last_record(db_path: Path) -> dict:
@@ -207,3 +212,153 @@ def test_flag_read_per_call(temp_db, monkeypatch):
     beam.recall("pluto", top_k=5)
     lines = _provenance_file(temp_db).read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
+
+
+def test_provenance_files_isolated_per_database(monkeypatch):
+    """Two databases in the SAME directory get separate audit files:
+    each file holds only its own store's queries (regression for the
+    shared recall_provenance.jsonl-per-directory collision)."""
+    monkeypatch.delenv("MNEMOSYNE_RECALL_PROVENANCE", raising=False)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        a, b = Path(tmpdir) / "a.db", Path(tmpdir) / "b.db"
+        append_recall_provenance(
+            str(a), "query-alpha", [{"id": "ma", "tier": "working",
+                                     "score": 1.0}], top_k=5,
+        )
+        append_recall_provenance(
+            str(b), "query-beta", [{"id": "mb", "tier": "working",
+                                    "score": 1.0}], top_k=5,
+        )
+
+        pa, pb = _provenance_file(a), _provenance_file(b)
+        assert pa.exists() and pb.exists()
+        assert pa != pb
+        assert [r["query"] for r in read_recall_provenance(a)] == ["query-alpha"]
+        assert [r["query"] for r in read_recall_provenance(b)] == ["query-beta"]
+
+
+def test_provenance_file_created_with_restrictive_permissions(
+        temp_db, monkeypatch):
+    """The file is created 0600: no group/other bits, under any umask."""
+    monkeypatch.delenv("MNEMOSYNE_RECALL_PROVENANCE", raising=False)
+    append_recall_provenance(str(temp_db), "perm-check", [], top_k=5)
+
+    st = _provenance_file(temp_db).stat()
+    assert st.st_mode & 0o077 == 0
+
+
+def test_rotation_keeps_single_generation(temp_db, monkeypatch):
+    """At the size cap the current file rotates to `.1` (overwriting any
+    previous generation); reads cover the current file only."""
+    monkeypatch.delenv("MNEMOSYNE_RECALL_PROVENANCE", raising=False)
+    # Rotate on every append so the policy is exercised deterministically.
+    monkeypatch.setattr(rp, "_MAX_FILE_BYTES", 1)
+    for i in range(5):
+        append_recall_provenance(
+            str(temp_db), f"rot-{i}", [{"id": f"m{i}", "tier": "working",
+                                        "score": 1.0}], top_k=5,
+        )
+
+    current = _provenance_file(temp_db)
+    rotated = Path(str(current) + ".1")
+    assert current.exists() and rotated.exists()
+    # Single generation only: no .2, .3, ... ever accumulates.
+    assert not Path(str(current) + ".2").exists()
+    # The current generation holds only post-rotation records; the
+    # rotated `.1` is not read back.
+    assert [r["query"] for r in read_recall_provenance(temp_db)] == ["rot-4"]
+
+
+def test_read_recall_provenance_reads_only_tail_window(temp_db, monkeypatch):
+    """Reads examine a bounded tail of the file, newest first, with the
+    possibly-partial first window line dropped."""
+    monkeypatch.delenv("MNEMOSYNE_RECALL_PROVENANCE", raising=False)
+    monkeypatch.setattr(rp, "_MAX_TAIL_BYTES", 500)
+    for i in range(50):
+        append_recall_provenance(
+            str(temp_db), f"tail-{i}", [{"id": f"m{i}", "tier": "working",
+                                         "score": 1.0}], top_k=5,
+        )
+
+    records = read_recall_provenance(temp_db, limit=100)
+    numbers = [int(r["query"].split("-")[1]) for r in records]
+    assert numbers, "tail read returned nothing"
+    assert numbers[0] == 49  # newest record first
+    assert numbers == sorted(numbers, reverse=True)
+    assert len(numbers) < 50  # window truncated, not the whole file
+
+
+def test_cleanup_orphaned_provenance_removes_files_when_db_gone(
+        temp_db, monkeypatch):
+    monkeypatch.delenv("MNEMOSYNE_RECALL_PROVENANCE", raising=False)
+    append_recall_provenance(str(temp_db), "orphan-check", [], top_k=5)
+    rotated = Path(str(_provenance_file(temp_db)) + ".1")
+    rotated.write_text("{}\n", encoding="utf-8")
+
+    # DB still present: nothing removed.
+    temp_db.write_bytes(b"")
+    assert cleanup_orphaned_provenance(temp_db) is False
+    assert _provenance_file(temp_db).exists()
+
+    temp_db.unlink()
+    assert cleanup_orphaned_provenance(temp_db) is True
+    assert not _provenance_file(temp_db).exists()
+    assert not rotated.exists()
+    # Idempotent: nothing left to clean.
+    assert cleanup_orphaned_provenance(temp_db) is False
+
+
+def test_enabled_recall_with_no_matches_writes_empty_results(
+        temp_db, monkeypatch):
+    monkeypatch.setenv("MNEMOSYNE_RECALL_PROVENANCE", "1")
+    beam = BeamMemory(session_id="prov-h", db_path=temp_db)
+
+    results = beam.recall("zzz-nothing-matches-this", top_k=5)
+    assert results == []
+
+    assert _provenance_file(temp_db).exists()
+    record = _read_last_record(temp_db)
+    assert record["query"] == "zzz-nothing-matches-this"
+    assert record["results"] == []
+
+
+def test_write_failure_does_not_break_recall(temp_db, monkeypatch):
+    """A provenance file path that cannot be written (a directory sits
+    there) must fail open: recall returns normally with its results."""
+    monkeypatch.setenv("MNEMOSYNE_RECALL_PROVENANCE", "1")
+    _provenance_file(temp_db).mkdir(parents=True)
+    beam = BeamMemory(session_id="prov-i", db_path=temp_db)
+    beam.remember("pluto iota provenance fact nine", source="test")
+
+    results = beam.recall("pluto", top_k=5)
+    assert results
+
+
+def test_concurrent_appends_never_interleave(temp_db, monkeypatch):
+    """8 threads x 25 appends to one store: exactly 200 lines, every
+    line intact JSON, every record present exactly once."""
+    monkeypatch.delenv("MNEMOSYNE_RECALL_PROVENANCE", raising=False)
+
+    def work(worker: int) -> None:
+        for i in range(25):
+            append_recall_provenance(
+                str(temp_db), f"w{worker}-{i}",
+                [{"id": f"m{worker}-{i}", "tier": "working", "score": 1.0}],
+                top_k=5,
+            )
+
+    threads = [
+        threading.Thread(target=work, args=(w,)) for w in range(8)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    lines = _provenance_file(temp_db).read_text(
+        encoding="utf-8").splitlines()
+    assert len(lines) == 200
+    queries = [json.loads(line)["query"] for line in lines]
+    assert Counter(queries) == Counter(
+        f"w{w}-{i}" for w in range(8) for i in range(25)
+    )
