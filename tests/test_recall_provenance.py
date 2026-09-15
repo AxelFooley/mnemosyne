@@ -362,3 +362,44 @@ def test_concurrent_appends_never_interleave(temp_db, monkeypatch):
     assert Counter(queries) == Counter(
         f"w{w}-{i}" for w in range(8) for i in range(25)
     )
+
+
+def test_polyphonic_recall_writes_no_provenance_line(temp_db, monkeypatch):
+    """Under MNEMOSYNE_POLYPHONIC_RECALL=1, recall() returns the engine's
+    poly_results before the linear provenance hook runs. The documented
+    exclusion must hold even with the provenance flag enabled. Uses an
+    injected fake engine (same idiom as test_e3a3_cross_tier_dedup) so
+    the test never depends on embeddings backends."""
+    from mnemosyne.core.polyphonic_recall import PolyphonicResult
+
+    monkeypatch.setenv("MNEMOSYNE_POLYPHONIC_RECALL", "1")
+    monkeypatch.setenv("MNEMOSYNE_RECALL_PROVENANCE", "1")
+    beam = BeamMemory(session_id="prov-j", db_path=temp_db)
+    real_id = beam.remember("pluto kappa provenance fact ten", source="test")
+
+    engine_calls: list[dict] = []
+
+    class _FakePolyEngine:
+        def recall(self, **kwargs):
+            engine_calls.append(kwargs)
+            return [
+                PolyphonicResult(
+                    # _recall_polyphonic re-fetches every returned id from
+                    # the db and silently drops unknown ones, so the fake
+                    # must return the real seeded row's id.
+                    memory_id=real_id,
+                    combined_score=0.9,
+                    voice_scores={"vector": 0.9},
+                    metadata={},
+                )
+            ]
+
+    monkeypatch.setattr(
+        beam, "_get_polyphonic_engine", lambda: _FakePolyEngine()
+    )
+
+    results = beam.recall("pluto", top_k=5)
+
+    assert engine_calls, "polyphonic engine path must have run"
+    assert results, "polyphonic results must be returned to caller"
+    assert not _provenance_file(temp_db).exists()
