@@ -165,10 +165,13 @@ def cleanup_orphaned_provenance(db_path: Any) -> bool:
     """
     path = _provenance_path(db_path)
     try:
-        if not path.exists() or Path(db_path).exists():
+        if Path(db_path).exists():
             return False
-        path.unlink()
         rotated = Path(str(path) + ".1")
+        if not path.exists() and not rotated.exists():
+            return False
+        if path.exists():
+            path.unlink()
         if rotated.exists():
             rotated.unlink()
         return True
