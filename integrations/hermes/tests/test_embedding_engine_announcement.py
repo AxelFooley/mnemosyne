@@ -210,3 +210,32 @@ def test_provider_announces_api_backend_and_missing_sqlite_vec(monkeypatch, tmp_
             assert caplog.text.count("dense/semantic recall is disabled") == 1
     finally:
         provider.shutdown()
+
+
+def test_announcement_is_atomic_under_concurrent_calls(monkeypatch, tmp_path, caplog):
+    """Concurrent calls must still emit exactly one warning."""
+    import threading as _threading
+    import time as _time
+    from mnemosyne.core import embeddings as _embeddings
+
+    _engine_capability(monkeypatch, dense=False, vec=True)
+    # Widen the window between the guard check and the flag write so the
+    # pre-fix code reliably emits one warning per thread.
+    _pinned = _embeddings.available
+    monkeypatch.setattr(
+        _embeddings, "available", lambda: (_time.sleep(0.1), _pinned())[1]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        threads = [
+            _threading.Thread(target=mnemosyne_hermes._announce_embedding_engine_unavailable)
+            for _ in range(8)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    # Branch-agnostic: the opt-out message and the unavailable message both
+    # start with this phrase, so the count is exact either way.
+    assert caplog.text.count("Mnemosyne: embedding engine") == 1

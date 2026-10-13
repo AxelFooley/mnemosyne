@@ -262,19 +262,24 @@ logger = logging.getLogger(__name__)
 # actual capability that is unavailable. Never raises and never changes recall
 # behaviour.
 _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED = False
+_EMBEDDING_ENGINE_UNAVAILABLE_LOCK = threading.Lock()
 
 
 def _announce_embedding_engine_unavailable() -> None:
     """Warn once per process when the embedding engine is unavailable."""
     global _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED
-    if _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED:
-        return
+    with _EMBEDDING_ENGINE_UNAVAILABLE_LOCK:
+        if _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED:
+            return
+        # Reserve before the (slow) capability detection so a concurrent call
+        # can neither re-run it nor emit a second warning. Released again below
+        # if there is nothing to announce.
+        _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED = True
     try:
         from mnemosyne.core import beam as _beam
         from mnemosyne.core import embeddings as _embeddings
 
         if _embeddings._is_disabled():
-            _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED = True
             logger.warning(
                 "Mnemosyne: embedding engine disabled by an opt-out env var "
                 "(MNEMOSYNE_NO_EMBEDDINGS / MNEMOSYNE_SKIP_EMBEDDINGS / "
@@ -303,13 +308,14 @@ def _announce_embedding_engine_unavailable() -> None:
         if not _beam._SQLITE_VEC_AVAILABLE:
             problems.append("missing sqlite_vec (no vector search)")
         if not problems:
+            with _EMBEDDING_ENGINE_UNAVAILABLE_LOCK:
+                _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED = False
             return
         if any("fastembed" in p or "sqlite_vec" in p for p in problems):
             hints.append(
                 "make the embeddings extra importable in "
                 "the runtime interpreter that runs this provider"
             )
-        _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED = True
         logger.warning(
             "Mnemosyne: embedding engine unavailable (%s); "
             "dense/semantic recall is disabled and recall falls back to "
@@ -319,6 +325,8 @@ def _announce_embedding_engine_unavailable() -> None:
         )
     except Exception:
         # Announcement only: never block provider startup on diagnostics.
+        with _EMBEDDING_ENGINE_UNAVAILABLE_LOCK:
+            _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED = False
         return
 
 # ---------------------------------------------------------------------------
