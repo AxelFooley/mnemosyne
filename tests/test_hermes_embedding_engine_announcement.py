@@ -136,3 +136,36 @@ def test_provider_reports_opt_out_without_install_hint(monkeypatch, tmp_path, ca
             assert "missing sqlite_vec" not in caplog.text
     finally:
         provider.shutdown()
+
+
+def test_provider_announces_api_backend_without_credentials(monkeypatch, tmp_path, caplog):
+    from mnemosyne.core import beam as beam_module
+    from mnemosyne.core import embeddings as embeddings_module
+
+    monkeypatch.setattr(hermes_memory_provider, "_get_beam_class", lambda: _OkBeam)
+    monkeypatch.setattr(MnemosyneMemoryProvider, "_init_audit_log", lambda self: None)
+    provider = MnemosyneMemoryProvider()
+    try:
+        monkeypatch.setattr(
+            hermes_memory_provider, "_EMBEDDING_ENGINE_UNAVAILABLE_LOGGED", False,
+            raising=False,
+        )
+        monkeypatch.setattr(embeddings_module, "_DEFAULT_MODEL", "openai/text-embedding-3-small")
+        monkeypatch.setattr(embeddings_module, "_OPENAI_API_KEY", "")
+        monkeypatch.setattr(embeddings_module, "_FASTEMBED_AVAILABLE", True)
+        monkeypatch.setattr(beam_module, "_SQLITE_VEC_AVAILABLE", True)
+        for name in (
+            "MNEMOSYNE_NO_EMBEDDINGS",
+            "MNEMOSYNE_SKIP_EMBEDDINGS",
+            "MNEMOSYNE_EMBEDDINGS_OFF",
+            "MNEMOSYNE_EMBEDDING_API_URL",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        with caplog.at_level(logging.WARNING, logger="hermes_memory_provider"):
+            provider.initialize("sess", **{"hermes_home": str(tmp_path), "auto_sleep": False})
+            assert "embedding API backend has no usable credentials" in caplog.text
+            assert "MNEMOSYNE_EMBEDDING_API_KEY" in caplog.text
+            assert "missing fastembed" not in caplog.text
+            assert "extra importable" not in caplog.text
+    finally:
+        provider.shutdown()

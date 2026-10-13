@@ -254,11 +254,13 @@ __version__ = "0.7.5"
 logger = logging.getLogger(__name__)
 
 # Fail-loud contract for the silent-degradation defect measured in production
-# (2026-10-13): when the embedding engine is unavailable, every embedding
-# write is skipped by the `if available():` guard and nothing logs, so a
-# gateway can run for weeks with dense/semantic recall off. The provider
-# announces the degraded state once per process at startup. Never raises and
-# never changes recall behaviour.
+# (2026-10-13): when fastembed is missing, every embedding write is skipped by
+# the `if available():` guard and nothing logs, so a gateway can run for weeks
+# with dense/semantic recall off; when only sqlite_vec is missing, writes still
+# happen and the limitation is vector search instead. The provider announces
+# the degraded state once per process at startup, attributing the cause to the
+# actual capability that is unavailable. Never raises and never changes recall
+# behaviour.
 _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED = False
 
 
@@ -283,6 +285,19 @@ def _announce_embedding_engine_unavailable() -> None:
 
         problems = []
         if not _embeddings.available():
+            if _embeddings._is_api_model(_embeddings._DEFAULT_MODEL):
+                # available() already returned False, so a keyless custom
+                # endpoint (the other True branch) is ruled out: the API
+                # backend is configured but its credentials are not usable.
+                _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED = True
+                logger.warning(
+                    "Mnemosyne: the configured embedding API backend has no "
+                    "usable credentials; dense/semantic recall is disabled "
+                    "and recall falls back to keyword-only. Hint: set "
+                    "MNEMOSYNE_EMBEDDING_API_KEY or OPENAI_API_KEY, or point "
+                    "MNEMOSYNE_EMBEDDING_API_URL at a keyless endpoint."
+                )
+                return
             problems.append("fastembed (no dense vectors)")
         if not _beam._SQLITE_VEC_AVAILABLE:
             problems.append("sqlite_vec (no vector search)")
