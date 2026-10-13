@@ -271,6 +271,16 @@ def _announce_embedding_engine_unavailable() -> None:
         from mnemosyne.core import beam as _beam
         from mnemosyne.core import embeddings as _embeddings
 
+        if _embeddings._is_disabled():
+            _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED = True
+            logger.warning(
+                "Mnemosyne: embedding engine disabled by an opt-out env var "
+                "(MNEMOSYNE_NO_EMBEDDINGS / MNEMOSYNE_SKIP_EMBEDDINGS / "
+                "MNEMOSYNE_EMBEDDINGS_OFF); dense/semantic recall is off and "
+                "recall falls back to keyword-only."
+            )
+            return
+
         problems = []
         if not _embeddings.available():
             problems.append("fastembed (no dense vectors)")

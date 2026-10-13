@@ -51,32 +51,88 @@ def _engine_capability(monkeypatch, *, dense: bool, vec: bool) -> None:
     )
     monkeypatch.setattr(embeddings_module, "available", lambda: dense)
     monkeypatch.setattr(beam_module, "_SQLITE_VEC_AVAILABLE", vec)
-
+    # Clear the env opt-out aliases so the missing-dependency branch runs.
+    for name in ("MNEMOSYNE_NO_EMBEDDINGS", "MNEMOSYNE_SKIP_EMBEDDINGS", "MNEMOSYNE_EMBEDDINGS_OFF"):
+        monkeypatch.delenv(name, raising=False)
 
 def test_provider_announces_unavailable_embedding_engine_once(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(hermes_memory_provider, "_get_beam_class", lambda: _OkBeam)
     monkeypatch.setattr(MnemosyneMemoryProvider, "_init_audit_log", lambda self: None)
     provider = MnemosyneMemoryProvider()
+    second = None
     kwargs = {"hermes_home": str(tmp_path), "auto_sleep": False}
+    try:
+        _engine_capability(monkeypatch, dense=False, vec=False)
+        with caplog.at_level(logging.WARNING, logger="hermes_memory_provider"):
+            provider.initialize("sess", **kwargs)
 
-    _engine_capability(monkeypatch, dense=False, vec=False)
-    with caplog.at_level(logging.WARNING, logger="hermes_memory_provider"):
-        provider.initialize("sess", **kwargs)
+            # The consequence, the hint and both missing halves are named, once.
+            assert caplog.text.count("dense/semantic recall is disabled") == 1
+            assert "fastembed" in caplog.text
+            assert "sqlite_vec" in caplog.text
+            assert "keyword-only" in caplog.text
+            assert "extra importable" in caplog.text
 
-        # The consequence, the hint and both missing halves are named, once.
-        assert caplog.text.count("dense/semantic recall is disabled") == 1
-        assert "fastembed" in caplog.text
-        assert "sqlite_vec" in caplog.text
-        assert "keyword-only" in caplog.text
-        assert "extra importable" in caplog.text
+            # Once per process: a second provider start must not re-announce.
+            second = MnemosyneMemoryProvider()
+            second.initialize("sess-2", **kwargs)
+            assert caplog.text.count("dense/semantic recall is disabled") == 1
 
-        # Once per process: a second provider start must not re-announce.
-        MnemosyneMemoryProvider().initialize("sess-2", **kwargs)
-        assert caplog.text.count("dense/semantic recall is disabled") == 1
+        # Engine available -> no announcement at all.
+        _engine_capability(monkeypatch, dense=True, vec=True)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="hermes_memory_provider"):
+            provider.initialize("sess-3", **kwargs)
+            assert "dense/semantic recall is disabled" not in caplog.text
+    finally:
+        provider.shutdown()
+        if second is not None:
+            second.shutdown()
 
-    # Engine available -> no announcement at all.
-    _engine_capability(monkeypatch, dense=True, vec=True)
-    caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="hermes_memory_provider"):
-        provider.initialize("sess-3", **kwargs)
-        assert "dense/semantic recall is disabled" not in caplog.text
+
+def test_provider_announces_missing_fastembed_only(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(hermes_memory_provider, "_get_beam_class", lambda: _OkBeam)
+    monkeypatch.setattr(MnemosyneMemoryProvider, "_init_audit_log", lambda self: None)
+    provider = MnemosyneMemoryProvider()
+    try:
+        _engine_capability(monkeypatch, dense=False, vec=True)
+        with caplog.at_level(logging.WARNING, logger="hermes_memory_provider"):
+            provider.initialize("sess", **{"hermes_home": str(tmp_path), "auto_sleep": False})
+            assert "missing fastembed" in caplog.text
+            assert "sqlite_vec" not in caplog.text
+            assert "extra importable" in caplog.text
+    finally:
+        provider.shutdown()
+
+
+def test_provider_announces_missing_sqlite_vec_only(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(hermes_memory_provider, "_get_beam_class", lambda: _OkBeam)
+    monkeypatch.setattr(MnemosyneMemoryProvider, "_init_audit_log", lambda self: None)
+    provider = MnemosyneMemoryProvider()
+    try:
+        _engine_capability(monkeypatch, dense=True, vec=False)
+        with caplog.at_level(logging.WARNING, logger="hermes_memory_provider"):
+            provider.initialize("sess", **{"hermes_home": str(tmp_path), "auto_sleep": False})
+            assert "missing sqlite_vec" in caplog.text
+            assert "fastembed" not in caplog.text
+            assert "extra importable" in caplog.text
+    finally:
+        provider.shutdown()
+
+
+def test_provider_reports_opt_out_without_install_hint(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(hermes_memory_provider, "_get_beam_class", lambda: _OkBeam)
+    monkeypatch.setattr(MnemosyneMemoryProvider, "_init_audit_log", lambda self: None)
+    provider = MnemosyneMemoryProvider()
+    try:
+        _engine_capability(monkeypatch, dense=False, vec=False)
+        monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
+        with caplog.at_level(logging.WARNING, logger="hermes_memory_provider"):
+            provider.initialize("sess", **{"hermes_home": str(tmp_path), "auto_sleep": False})
+            assert "opt-out env var" in caplog.text
+            assert "keyword-only" in caplog.text
+            assert "extra importable" not in caplog.text
+            assert "missing fastembed" not in caplog.text
+            assert "missing sqlite_vec" not in caplog.text
+    finally:
+        provider.shutdown()
