@@ -200,6 +200,8 @@ def test_provider_announces_api_backend_and_missing_sqlite_vec(monkeypatch, tmp_
             # Both simultaneous causes are named in the single warning.
             assert "embedding API backend has no usable credentials" in text
             assert "missing sqlite_vec" in text
+            # fastembed is available in this state: it must not be named as missing.
+            assert "missing fastembed" not in text
             # Both hints are present: credentials AND the dependency install.
             assert "MNEMOSYNE_EMBEDDING_API_KEY" in text
             assert "extra importable" in text
