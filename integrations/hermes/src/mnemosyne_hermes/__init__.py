@@ -253,6 +253,43 @@ __version__ = "0.7.5"
 
 logger = logging.getLogger(__name__)
 
+# Fail-loud contract for the silent-degradation defect measured in production
+# (2026-10-13): when the embedding engine is unavailable, every embedding
+# write is skipped by the `if available():` guard and nothing logs, so a
+# gateway can run for weeks with dense/semantic recall off. The provider
+# announces the degraded state once per process at startup. Never raises and
+# never changes recall behaviour.
+_EMBEDDING_ENGINE_UNAVAILABLE_LOGGED = False
+
+
+def _announce_embedding_engine_unavailable() -> None:
+    """Warn once per process when the embedding engine is unavailable."""
+    global _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED
+    if _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED:
+        return
+    try:
+        from mnemosyne.core import beam as _beam
+        from mnemosyne.core import embeddings as _embeddings
+
+        problems = []
+        if not _embeddings.available():
+            problems.append("fastembed (no dense vectors)")
+        if not _beam._SQLITE_VEC_AVAILABLE:
+            problems.append("sqlite_vec (no vector search)")
+        if not problems:
+            return
+        _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED = True
+        logger.warning(
+            "Mnemosyne: embedding engine unavailable (missing %s); "
+            "dense/semantic recall is disabled and recall falls back to "
+            "keyword-only. Hint: make the embeddings extra importable in "
+            "the runtime interpreter that runs this provider.",
+            " and ".join(problems),
+        )
+    except Exception:
+        # Announcement only: never block provider startup on diagnostics.
+        return
+
 # ---------------------------------------------------------------------------
 # C13: provider-active flag for multi-instance tracking.
 # ---------------------------------------------------------------------------
@@ -2138,6 +2175,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize Mnemosyne beam for this session."""
+        _announce_embedding_engine_unavailable()
         with self._ensure_beam_access_lock():
             with self._ensure_surface_adapter_lock():
                 previous_ambient = self.__dict__.get("_ambient_key", "default")
