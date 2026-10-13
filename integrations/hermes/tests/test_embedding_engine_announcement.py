@@ -170,3 +170,41 @@ def test_provider_announces_api_backend_without_credentials(monkeypatch, tmp_pat
             assert "extra importable" not in caplog.text
     finally:
         provider.shutdown()
+
+
+def test_provider_announces_api_backend_and_missing_sqlite_vec(monkeypatch, tmp_path, caplog):
+    from mnemosyne.core import beam as beam_module
+    from mnemosyne.core import embeddings as embeddings_module
+
+    monkeypatch.setattr(mnemosyne_hermes, "_get_beam_class", lambda: _OkBeam)
+    monkeypatch.setattr(MnemosyneMemoryProvider, "_init_audit_log", lambda self: None)
+    provider = MnemosyneMemoryProvider()
+    try:
+        monkeypatch.setattr(
+            mnemosyne_hermes, "_EMBEDDING_ENGINE_UNAVAILABLE_LOGGED", False,
+            raising=False,
+        )
+        monkeypatch.setattr(embeddings_module, "_DEFAULT_MODEL", "openai/text-embedding-3-small")
+        monkeypatch.setattr(embeddings_module, "_OPENAI_API_KEY", "")
+        monkeypatch.setattr(embeddings_module, "_FASTEMBED_AVAILABLE", True)
+        monkeypatch.setattr(beam_module, "_SQLITE_VEC_AVAILABLE", False)
+        for name in (
+            "MNEMOSYNE_NO_EMBEDDINGS",
+            "MNEMOSYNE_SKIP_EMBEDDINGS",
+            "MNEMOSYNE_EMBEDDINGS_OFF",
+            "MNEMOSYNE_EMBEDDING_API_URL",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        with caplog.at_level(logging.WARNING, logger="mnemosyne_hermes"):
+            provider.initialize("sess", **{"hermes_home": str(tmp_path), "auto_sleep": False})
+            text = caplog.text
+            # Both simultaneous causes are named in the single warning.
+            assert "embedding API backend has no usable credentials" in text
+            assert "missing sqlite_vec" in text
+            # Both hints are present: credentials AND the dependency install.
+            assert "MNEMOSYNE_EMBEDDING_API_KEY" in text
+            assert "extra importable" in text
+            # One warning, not two.
+            assert caplog.text.count("dense/semantic recall is disabled") == 1
+    finally:
+        provider.shutdown()

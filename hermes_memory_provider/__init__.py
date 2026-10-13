@@ -299,32 +299,38 @@ def _announce_embedding_engine_unavailable() -> None:
             return
 
         problems = []
+        hints = []
         if not _embeddings.available():
             if _embeddings._is_api_model(_embeddings._DEFAULT_MODEL):
                 # available() already returned False, so a keyless custom
                 # endpoint (the other True branch) is ruled out: the API
                 # backend is configured but its credentials are not usable.
-                _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED = True
-                logger.warning(
-                    "Mnemosyne: the configured embedding API backend has no "
-                    "usable credentials; dense/semantic recall is disabled "
-                    "and recall falls back to keyword-only. Hint: set "
-                    "MNEMOSYNE_EMBEDDING_API_KEY or OPENAI_API_KEY, or point "
-                    "MNEMOSYNE_EMBEDDING_API_URL at a keyless endpoint."
+                problems.append(
+                    "the configured embedding API backend has no usable "
+                    "credentials"
                 )
-                return
-            problems.append("fastembed (no dense vectors)")
+                hints.append(
+                    "set MNEMOSYNE_EMBEDDING_API_KEY or OPENAI_API_KEY, or "
+                    "point MNEMOSYNE_EMBEDDING_API_URL at a keyless endpoint"
+                )
+            else:
+                problems.append("missing fastembed (no dense vectors)")
         if not _beam._SQLITE_VEC_AVAILABLE:
-            problems.append("sqlite_vec (no vector search)")
+            problems.append("missing sqlite_vec (no vector search)")
         if not problems:
             return
+        if any("fastembed" in p or "sqlite_vec" in p for p in problems):
+            hints.append(
+                "make the embeddings extra importable in "
+                "the runtime interpreter that runs this provider"
+            )
         _EMBEDDING_ENGINE_UNAVAILABLE_LOGGED = True
         logger.warning(
-            "Mnemosyne: embedding engine unavailable (missing %s); "
+            "Mnemosyne: embedding engine unavailable (%s); "
             "dense/semantic recall is disabled and recall falls back to "
-            "keyword-only. Hint: make the embeddings extra importable in "
-            "the runtime interpreter that runs this provider.",
+            "keyword-only. Hint: %s.",
             " and ".join(problems),
+            "; ".join(hints),
         )
     except Exception:
         # Announcement only: never block provider startup on diagnostics.
