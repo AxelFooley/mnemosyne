@@ -91,6 +91,32 @@ def test_provider_announces_unavailable_embedding_engine_once(monkeypatch, tmp_p
             second.shutdown()
 
 
+def test_provider_reservation_released_so_later_outage_warns(monkeypatch, tmp_path, caplog):
+    from mnemosyne.core import beam as beam_module
+    from mnemosyne.core import embeddings as embeddings_module
+
+    monkeypatch.setattr(mnemosyne_hermes, "_get_beam_class", lambda: _OkBeam)
+    monkeypatch.setattr(MnemosyneMemoryProvider, "_init_audit_log", lambda self: None)
+    provider = MnemosyneMemoryProvider()
+    try:
+        _engine_capability(monkeypatch, dense=True, vec=True)
+        with caplog.at_level(logging.WARNING, logger="mnemosyne_hermes"):
+            # A start with the engine fully available must not consume the
+            # once-per-process budget: the reservation is released again.
+            provider.initialize("sess", **{"hermes_home": str(tmp_path), "auto_sleep": False})
+            assert mnemosyne_hermes._EMBEDDING_ENGINE_UNAVAILABLE_LOGGED is False
+            assert "dense/semantic recall is disabled" not in caplog.text
+
+            # Later outage (the flag is NOT reset in between): the released
+            # guard must still let the warning through.
+            monkeypatch.setattr(embeddings_module, "available", lambda: False)
+            monkeypatch.setattr(beam_module, "_SQLITE_VEC_AVAILABLE", False)
+            provider.initialize("sess-2", **{"hermes_home": str(tmp_path), "auto_sleep": False})
+            assert caplog.text.count("dense/semantic recall is disabled") == 1
+    finally:
+        provider.shutdown()
+
+
 def test_provider_announces_missing_fastembed_only(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(mnemosyne_hermes, "_get_beam_class", lambda: _OkBeam)
     monkeypatch.setattr(MnemosyneMemoryProvider, "_init_audit_log", lambda self: None)
