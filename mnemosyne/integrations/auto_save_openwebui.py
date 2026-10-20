@@ -155,7 +155,22 @@ def _extract_chat_messages(chat_data: Dict[str, Any]) -> list[Dict[str, Any]]:
 
         messages.extend(_coerce_messages(container.get("messages")))
 
-    return messages
+    deduplicated = []
+    seen_ids = set()
+    for message in messages:
+        message_id = message.get("id")
+        if message_id in (None, ""):
+            message_id = message.get("message_id")
+        if message_id in (None, ""):
+            deduplicated.append(message)
+            continue
+
+        message_id = str(message_id)
+        if message_id not in seen_ids:
+            seen_ids.add(message_id)
+            deduplicated.append(message)
+
+    return deduplicated
 
 
 # ── Memory Saver ──────────────────────────────────────────────────────
@@ -311,6 +326,8 @@ class SyncEngine:
                 )
 
                 for msg in messages:
+                    if msg.get("role") == "assistant" and msg.get("done") is False:
+                        continue
                     saved = self.saver.save_message(
                         message=msg,
                         chat_title=chat_title,
