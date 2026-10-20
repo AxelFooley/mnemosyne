@@ -8,6 +8,11 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 ## [Unreleased]
 
 ### Fixed
+- **Partial legacy Hermes PM adoption work (#1169 remains open).** An opt-in installer path preserves the verified installed core/provider pair and operator-selected extras through Hermes PM admission, refuses external wrappers, and provides a core-free read-only console plan without changing normal installation defaults; this does not close the broader issue.
+
+- Match existing Hermes identity signal phrases only at Unicode word boundaries, preventing partial-word captures such as "I feel like as …" while preserving complete-phrase matches (PR #1202; partial fix for #1200).
+
+- Filter Hermes machine-generated notice envelopes from conversation sync (#1102)
 
 - **Open WebUI auto-save uses current API routes.** Probe `/health` and sync chats through `/api/v1/chats`, extracting messages from current history-map responses so an HTML fallback is not mistaken for an unreachable service.
 
@@ -44,6 +49,8 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 - **Canonical writes through the Hermes integration fail closed when the active profile cannot be resolved (#1050 follow-up, CWE-863).** `_canonical_write_guard()` converted a raising or empty host-profile lookup into `turn == ""` and then returned permission, so `mnemosyne_remember_canonical` / `mnemosyne_forget_canonical` could write without a verified owner. Both now return a structured `canonical_profile_unavailable` refusal before the write; reads are unaffected. The canonical-tools test fixture pins the turn profile with a minimal host stand-in when the Hermes host is absent, so the concordant-owner contract holds in every environment.
 
 ### Added
+
+- **`MNEMOSYNE_EMBEDDING_MAX_BYTES` caps API embedding inputs by UTF-8 bytes (#1199).** A character cap (`MNEMOSYNE_EMBEDDING_MAX_CHARS`, #1052) does not bound tokens: against a llama.cpp endpoint with an 8192-token slot, 6000 characters of some scripts tokenized to 9–18k tokens and still overflowed. UTF-8 bytes bound tokens from above for byte-level BPE tokenizers, so a byte cap at or below the slot bounds the input text itself; leave headroom for tokens the endpoint adds (BOS/EOS, separators, an instruction prefix). The cap is off by default and applies only to the API embedding path. When set, lone surrogates are dropped from every input, the head of the text is kept on a whole-character boundary, every cut is logged with the actual result length, and an input with no UTF-8-encodable character left raises instead of sending an empty string.
 
 - **`recall_with_evidence_pack()` adds opt-in supplemental recall evidence (#545).** The API preserves the normal primary ranking and returns a bounded, provenance-preserving `evidence_pack` from eligible additional sessions. Candidate retrieval is telemetry-neutral, honors recall visibility and temporal filters, excludes consolidated and synthetic rows, and never exposes the raw candidate pool.
 
