@@ -1,6 +1,8 @@
 import asyncio
 from unittest.mock import Mock
 
+import pytest
+
 from mnemosyne.integrations import auto_save_openwebui
 
 
@@ -108,6 +110,70 @@ def test_sync_once_reads_current_openwebui_chat_payload(monkeypatch):
         call.kwargs["metadata"]["user_id"] == "webui-user"
         for call in memory.remember.call_args_list
     )
+
+
+@pytest.mark.parametrize(
+    ("chat_data", "message_id", "content"),
+    [
+        (
+            {
+                "chat": {
+                    "history": {
+                        "messages": [
+                            {"id": "history-list", "content": "History list"}
+                        ]
+                    }
+                }
+            },
+            "history-list",
+            "History list",
+        ),
+        (
+            {"history": [{"id": "top-history", "content": "Top history"}]},
+            "top-history",
+            "Top history",
+        ),
+        (
+            {"messages": [{"id": "top-messages", "content": "Top messages"}]},
+            "top-messages",
+            "Top messages",
+        ),
+    ],
+)
+def test_sync_once_saves_supported_message_container_shapes(
+    monkeypatch, chat_data, message_id, content
+):
+    """Save messages from each container shape supported by extraction."""
+    list_url = (
+        "http://openwebui.test/api/v1/chats/?page=1"
+        "&include_pinned=true&include_folders=true"
+    )
+    detail_url = "http://openwebui.test/api/v1/chats/chat-one"
+    next_page_url = (
+        "http://openwebui.test/api/v1/chats/?page=2"
+        "&include_pinned=true&include_folders=true"
+    )
+    responses = {
+        list_url: [{"id": "chat-one", "title": "Test chat"}],
+        detail_url: chat_data,
+        next_page_url: [],
+    }
+
+    async def fake_api_get_async(url, api_key=""):
+        """Return the fixture for the requested payload shape."""
+        return responses[url]
+
+    monkeypatch.setattr(auto_save_openwebui, "_api_get_async", fake_api_get_async)
+    engine = object.__new__(auto_save_openwebui.SyncEngine)
+    engine.url = "http://openwebui.test"
+    engine.api_key = "key"
+    engine.saver, memory = _memory_saver(monkeypatch)
+
+    result = asyncio.run(engine.sync_once())
+
+    assert result["saved"] == 1
+    assert memory.remember.call_args.kwargs["content"] == content
+    assert auto_save_openwebui._PROCESSED_IDS == {f"chat-one:{message_id}"}
 
 
 def test_sync_once_saves_assistant_message_after_stream_completes(monkeypatch):
