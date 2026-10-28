@@ -173,6 +173,28 @@ def _extract_chat_messages(chat_data: Dict[str, Any]) -> list[Dict[str, Any]]:
     return deduplicated
 
 
+def _format_message_timestamp(value: Any) -> str:
+    """Normalize epoch or ISO-8601 timestamps to UTC ISO-8601."""
+    if value in (None, ""):
+        value = time.time()
+
+    if isinstance(value, str):
+        value = value.strip()
+        try:
+            value = float(value)
+        except ValueError:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc).isoformat()
+
+    if not isinstance(value, (int, float)):
+        raise ValueError(f"Unsupported timestamp type: {type(value).__name__}")
+    if value > 10_000_000_000:
+        value /= 1000
+    return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+
+
 # ── Memory Saver ──────────────────────────────────────────────────────
 
 
@@ -232,10 +254,15 @@ class MemorySaver:
         role = str(message.get("role", "user"))
 
         # Extract timestamp
-        ts = message.get("timestamp") or message.get("created_at") or int(time.time())
-        if isinstance(ts, (int, float)) and ts > 10_000_000_000:
-            ts = ts / 1000
-        timestamp = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+        ts = message.get("timestamp")
+        if ts in (None, ""):
+            ts = message.get("created_at")
+        try:
+            timestamp = _format_message_timestamp(ts)
+        except (OSError, OverflowError, TypeError, ValueError) as e:
+            logger.warning("Skipping message %s with invalid timestamp: %s", unique_id, e)
+            self._stats["errors"] += 1
+            return False
 
         # Build metadata
         metadata = {

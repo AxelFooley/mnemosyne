@@ -249,6 +249,78 @@ def test_sync_once_saves_assistant_message_after_stream_completes(monkeypatch):
     assert memory.remember.call_args.kwargs["content"] == "Complete answer"
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        1_700_000_000,
+        1_700_000_000_000,
+        "1700000000",
+        "2023-11-14T22:13:20Z",
+    ],
+)
+def test_format_message_timestamp_supports_openwebui_formats(value):
+    """Normalize numeric and ISO-8601 Open WebUI timestamps."""
+    assert (
+        auto_save_openwebui._format_message_timestamp(value)
+        == "2023-11-14T22:13:20+00:00"
+    )
+
+
+def test_sync_once_isolates_invalid_message_timestamps(monkeypatch):
+    """Continue to later chats when one message has a malformed timestamp."""
+    list_url = (
+        "http://openwebui.test/api/v1/chats/?page=1"
+        "&include_pinned=true&include_folders=true"
+    )
+    next_page_url = (
+        "http://openwebui.test/api/v1/chats/?page=2"
+        "&include_pinned=true&include_folders=true"
+    )
+    responses = {
+        list_url: [
+            {"id": "malformed-chat", "title": "Malformed"},
+            {"id": "valid-chat", "title": "Valid"},
+        ],
+        "http://openwebui.test/api/v1/chats/malformed-chat": {
+            "messages": [
+                {
+                    "id": "malformed-message",
+                    "content": "Do not save",
+                    "timestamp": "not-a-timestamp",
+                }
+            ]
+        },
+        "http://openwebui.test/api/v1/chats/valid-chat": {
+            "messages": [
+                {
+                    "id": "valid-message",
+                    "content": "Save later chat",
+                    "timestamp": "2023-11-14T22:13:20Z",
+                }
+            ]
+        },
+        next_page_url: [],
+    }
+
+    async def fake_api_get_async(url, api_key=""):
+        """Return one malformed chat followed by a valid chat."""
+        return responses[url]
+
+    monkeypatch.setattr(auto_save_openwebui, "_api_get_async", fake_api_get_async)
+    engine = object.__new__(auto_save_openwebui.SyncEngine)
+    engine.url = "http://openwebui.test"
+    engine.api_key = "key"
+    engine.saver, memory = _memory_saver(monkeypatch)
+
+    result = asyncio.run(engine.sync_once())
+
+    assert result["saved"] == 1
+    assert result["total"]["errors"] == 1
+    assert memory.remember.call_count == 1
+    assert memory.remember.call_args.kwargs["content"] == "Save later chat"
+    assert auto_save_openwebui._PROCESSED_IDS == {"valid-chat:valid-message"}
+
+
 def test_sync_once_includes_pinned_folder_and_null_id_messages(monkeypatch):
     """Request excluded chat categories and preserve message_id fallbacks."""
     list_url = (
