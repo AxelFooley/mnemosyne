@@ -16,6 +16,18 @@ Based on mnemosyne-memory core library. Zero cloud. Zero latency.
 
 from __future__ import annotations
 
+import sys
+
+# File-loaded entry points cannot rely on a parent package guard.
+if sys.platform in {"android", "emscripten"} or (
+    sys.platform == "linux" and hasattr(sys, "getandroidapilevel")
+):
+    _platform_label = "android" if sys.platform == "linux" else sys.platform
+    raise RuntimeError(
+        f"Mnemosyne native Hermes integration is unsupported on {_platform_label}; "
+        "no provider or tools were activated."
+    )
+
 from contextlib import contextmanager, nullcontext
 import json
 import logging
@@ -165,7 +177,7 @@ def _cleanup_committed_pending_claim(claim_path: Path) -> Optional[str]:
 
 from datetime import datetime, timedelta, timezone
 
-# Mnemosyne core is installed via pip (mnemosyne-memory>=3.11.1 dependency),
+# Mnemosyne core is installed via the declared package dependency,
 # but keep imports lazy so installer/status CLI commands still work in broken
 # or partially-installed environments.
 try:
@@ -249,7 +261,7 @@ except Exception as _persona_import_exc:  # pragma: no cover - graceful import f
         def _with_persona_block(self, base: str) -> str:
             return base
 
-__version__ = "0.7.6"
+__version__ = "0.7.7"
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +275,29 @@ logger = logging.getLogger(__name__)
 _provider_active: bool = False
 _active_provider_count: int = 0
 _provider_lock = threading.Lock()
+def _release_thread_connection(db_path=None) -> None:
+    """Release this worker thread's cached SQLite handle (mnemosyne#1163).
+
+    Valid only for a worker that created its own memory instance, finished with
+    it, and will never use it again. The local variable may still reference the
+    instance graph when this runs -- the call sits in ``finally`` -- so the
+    precondition is no further use, not no remaining reference. The provider's
+    per-session beams are retained on purpose and must never be released here.
+    The core helper refuses the main thread.
+    """
+    try:
+        # Import the side-effect-free release module, never
+        # ``mnemosyne.core.memory``: importing that module runs ``init_db()``,
+        # which opens a default-database connection and republishes it into
+        # ``beam``'s thread-local cache, displacing the handle this worker just
+        # used before cleanup can select it. Cores without the module (the
+        # released b5) fail soft here as before.
+        from mnemosyne.core.connection_release import close_thread_connection
+
+        close_thread_connection(db_path)
+    except Exception:  # never let cleanup break a sleep cycle
+        logger.debug("thread connection release failed", exc_info=True)
+
 
 # Host-backend ownership is deliberately separate from _provider_active: only
 # a primary provider whose Beam initialization succeeded owns a contribution.
@@ -2763,7 +2798,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             # (working / init-failed-visible / skip-context-silent).
             base = (
                 "# Mnemosyne Memory\n"
-                "Active native local memory. Mnemosyne is primary; the legacy memory tool is deprecated for durable storage.\n"
+                "Active native local memory. Mnemosyne is primary; the legacy memory tool is deprecated for bulk durable storage. "
+                "Small standing rules and context anchors may stay in the always-injected memory "
+                "tier, a supported complementary tier (bounded, loaded per session); this exception "
+                "takes precedence over general storage guidance.\n"
                 "Use mnemosyne_recall for durable facts/preferences before asking the user to repeat old context.\n"
                 "Before writing durable memory, choose the narrowest layer: "
                 "mnemosyne_remember for ordinary facts/preferences/insights; "
@@ -3340,6 +3378,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                             sleep_beam.sleep()
                     except Exception as inner:
                         logger.debug("Mnemosyne auto-sleep worker failed: %s", inner)
+                    finally:
+                        _release_thread_connection(sleep_args.get("db_path"))
 
                 # P1b: run the worker in the caller's copied context (in-turn spawn)
                 # so out-of-turn ambient fallback never misbinds capture writes.
@@ -5003,7 +5043,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                             "episodic_memory": cur.execute("SELECT COUNT(*) FROM episodic_memory").fetchone()[0],
                             "facts": cur.execute("SELECT COUNT(*) FROM facts").fetchone()[0],
                         }
-                        result["active_provider_orphan_diagnostics"] = _memory_orphan_diagnostics(con)
+                        result["active_provider_orphan_diagnostics"] = {
+                            **_memory_orphan_diagnostics(con),
+                            # PRAGMA foreign_keys is connection-local, not DB state.
+                            "foreign_keys_connection": "separate_diagnostic_connection",
+                        }
                     finally:
                         con.close()
                     try:
@@ -5335,6 +5379,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                         sleep_beam.sleep()
                 except Exception as inner:
                     logger.debug("Mnemosyne session-end sleep failed: %s", inner)
+                finally:
+                    _release_thread_connection(sleep_args.get("db_path"))
 
             sleep_thread = threading.Thread(
                 target=contextvars.copy_context().run, args=(_sleep_with_logging,), daemon=True)

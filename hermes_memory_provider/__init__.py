@@ -1,25 +1,34 @@
-"""Mnemosyne Memory Provider for Hermes.
+"""Legacy Mnemosyne Memory Provider for Hermes.
 
-Deploy to Hermes via:
-    ln -s /path/to/mnemosyne/hermes_memory_provider ~/.hermes/plugins/mnemosyne
+The direct source-checkout symlink installation is deprecated. For supported
+Hermes setup, use the standalone ``mnemosyne-hermes`` package and the canonical
+guide at ``../docs/hermes-integration.md`` (relative to this module's directory).
 
-Then set in ~/.hermes/config.yaml:
-    memory:
-      provider: mnemosyne
-
-This gives Mnemosyne first-class MemoryProvider integration (system prompt
-injection, pre-turn prefetch, post-turn sync, tool dispatch) while remaining
-a standalone plugin deployed through the plugin system.
+This legacy package is retained for existing imports. This documentation change
+does not alter runtime behavior, exports or tool schemas. Future removal and
+compatibility boundaries are tracked in #655; no removal date or future shim is
+promised here.
 """
 
 from __future__ import annotations
+
+import sys
+
+# File-loaded entry points cannot rely on a parent package guard.
+if sys.platform in {"android", "emscripten"} or (
+    sys.platform == "linux" and hasattr(sys, "getandroidapilevel")
+):
+    _platform_label = "android" if sys.platform == "linux" else sys.platform
+    raise RuntimeError(
+        f"Mnemosyne native Hermes integration is unsupported on {_platform_label}; "
+        "no provider or tools were activated."
+    )
 
 from contextlib import contextmanager
 import json
 import logging
 import os
 import re
-import sys
 import threading
 import time
 from contextlib import nullcontext
@@ -643,8 +652,9 @@ def _sanitize_prefetch_query(query: str) -> str:
 REMEMBER_SCHEMA = {
     "name": "mnemosyne_remember",
     "description": (
-        "Store a durable memory in Mnemosyne. Use for ANY fact, preference, "
-        "identity, insight, or context that should persist across sessions. Higher importance "
+        "Store a durable memory in Mnemosyne. Use for bulk durable facts, preferences, "
+        "identity, insights, or context that should persist across sessions. Small standing "
+        "rules and context anchors may stay in the always-injected memory tier instead. Higher importance "
         "(0.0-1.0) surfaces the memory more often. Use scope='global' for user-level "
         "facts; scope='session' for conversation-specific context. Use valid_until "
         "(ISO date YYYY-MM-DD) for time-bound facts. Use extract_entities=True to "
@@ -937,7 +947,13 @@ REMEMBER_MEDIA_SCHEMA = {
             "title": {"type": "string", "description": "Short human title for the media. Optional."},
             "hint": {
                 "type": "string",
-                "description": "Guidance for the describer: what to look for, or names and jargon to expect in speech.",
+                "description": (
+                    "Guidance for the describer. For the OpenAI-compatible image adapter, "
+                    "a non-empty hint replaces the entire prompt; it is not appended. "
+                    "The caller must include instructions for the expected JSON response "
+                    "(summary and moments). An empty or omitted hint uses the configured "
+                    "or default prompt template."
+                ),
             },
             "max_moments": {
                 "type": "integer",
@@ -2351,10 +2367,13 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             # (working / init-failed-visible / skip-context-silent).
             base = (
                 "# Mnemosyne Memory\n"
-                "Active (native local memory). Use mnemosyne_remember to store ANY "
-                "durable fact, preference, identity, or insight. Use mnemosyne_recall to search. "
+                "Active (native local memory). Use mnemosyne_remember for bulk durable storage: "
+                "facts, preferences, identity, and insights. Use mnemosyne_recall to search. "
                 "Use mnemosyne_shared_* tools for manual shared surface CRUD. "
-                "The legacy memory tool is deprecated for durable storage — Mnemosyne is primary.\n"
+                "The legacy memory tool is deprecated for bulk durable storage — Mnemosyne is primary. "
+                "Small standing rules and context anchors may stay in the always-injected memory "
+                "tier, a supported complementary tier (bounded, loaded per session); this exception "
+                "takes precedence over general storage guidance.\n"
                 "\n"
                 "When a `## Mnemosyne Context` block is injected into the current turn, "
                 "read it before calling retrieval tools. If it answers the user's question, "
