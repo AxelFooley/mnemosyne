@@ -211,7 +211,12 @@ class MemorySaver:
         Returns True if saved, False if skipped (duplicate).
         """
         # Build a unique ID from message + chat
-        msg_id = str(message.get("id", message.get("message_id", id(message))))
+        msg_id = message.get("id")
+        if msg_id in (None, ""):
+            msg_id = message.get("message_id")
+        if msg_id in (None, ""):
+            msg_id = id(message)
+        msg_id = str(msg_id)
         unique_id = f"{chat_id}:{msg_id}"
 
         if unique_id in _PROCESSED_IDS:
@@ -293,7 +298,8 @@ class SyncEngine:
         while True:
             try:
                 chats = await _api_get_async(
-                    f"{self.url}/api/v1/chats/?page={page}",
+                    f"{self.url}/api/v1/chats/?page={page}"
+                    "&include_pinned=true&include_folders=true",
                     self.api_key,
                 )
             except Exception as e:

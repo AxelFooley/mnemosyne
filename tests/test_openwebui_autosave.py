@@ -34,9 +34,15 @@ def test_health_check_uses_openwebui_health_route(monkeypatch):
 def test_sync_once_reads_current_openwebui_chat_payload(monkeypatch):
     """Save overlapping history and flat-list messages only once."""
     chat_id = "chat/one"
-    list_url = "http://openwebui.test/api/v1/chats/?page=1"
+    list_url = (
+        "http://openwebui.test/api/v1/chats/?page=1"
+        "&include_pinned=true&include_folders=true"
+    )
     detail_url = "http://openwebui.test/api/v1/chats/chat%2Fone"
-    next_page_url = "http://openwebui.test/api/v1/chats/?page=2"
+    next_page_url = (
+        "http://openwebui.test/api/v1/chats/?page=2"
+        "&include_pinned=true&include_folders=true"
+    )
     responses = {
         list_url: [{"id": chat_id, "title": "Test chat"}],
         detail_url: {
@@ -107,9 +113,15 @@ def test_sync_once_reads_current_openwebui_chat_payload(monkeypatch):
 def test_sync_once_saves_assistant_message_after_stream_completes(monkeypatch):
     """Leave unfinished assistant IDs available for a later completed sync."""
     chat_id = "chat-one"
-    list_url = "http://openwebui.test/api/v1/chats/?page=1"
+    list_url = (
+        "http://openwebui.test/api/v1/chats/?page=1"
+        "&include_pinned=true&include_folders=true"
+    )
     detail_url = f"http://openwebui.test/api/v1/chats/{chat_id}"
-    next_page_url = "http://openwebui.test/api/v1/chats/?page=2"
+    next_page_url = (
+        "http://openwebui.test/api/v1/chats/?page=2"
+        "&include_pinned=true&include_folders=true"
+    )
     details = iter(
         [
             {
@@ -169,3 +181,77 @@ def test_sync_once_saves_assistant_message_after_stream_completes(monkeypatch):
     assert engine.saver.get_stats()["saved"] == 1
     assert memory.remember.call_count == 1
     assert memory.remember.call_args.kwargs["content"] == "Complete answer"
+
+
+def test_sync_once_includes_pinned_folder_and_null_id_messages(monkeypatch):
+    """Request excluded chat categories and preserve message_id fallbacks."""
+    list_url = (
+        "http://openwebui.test/api/v1/chats/?page=1"
+        "&include_pinned=true&include_folders=true"
+    )
+    next_page_url = (
+        "http://openwebui.test/api/v1/chats/?page=2"
+        "&include_pinned=true&include_folders=true"
+    )
+    responses = {
+        list_url: [
+            {"id": "pinned-chat", "title": "Pinned"},
+            {"id": "folder-chat", "title": "Folder"},
+        ],
+        "http://openwebui.test/api/v1/chats/pinned-chat": {
+            "chat": {
+                "messages": [
+                    {
+                        "id": None,
+                        "message_id": "null-id-one",
+                        "role": "user",
+                        "content": "First null ID",
+                    },
+                    {
+                        "id": None,
+                        "message_id": "null-id-two",
+                        "role": "assistant",
+                        "content": "Second null ID",
+                    },
+                ]
+            }
+        },
+        "http://openwebui.test/api/v1/chats/folder-chat": {
+            "chat": {
+                "messages": [
+                    {
+                        "id": "folder-message",
+                        "role": "user",
+                        "content": "Folder content",
+                    }
+                ]
+            }
+        },
+        next_page_url: [],
+    }
+
+    async def fake_api_get_async(url, api_key=""):
+        """Return pinned, folder, and null-ID fixtures."""
+        return responses[url]
+
+    monkeypatch.setattr(auto_save_openwebui, "_api_get_async", fake_api_get_async)
+    engine = object.__new__(auto_save_openwebui.SyncEngine)
+    engine.url = "http://openwebui.test"
+    engine.api_key = "key"
+    engine.saver, memory = _memory_saver(monkeypatch)
+
+    result = asyncio.run(engine.sync_once())
+
+    assert result["saved"] == 3
+    assert result["skipped"] == 0
+    assert memory.remember.call_count == 3
+    assert [call.kwargs["content"] for call in memory.remember.call_args_list] == [
+        "First null ID",
+        "Second null ID",
+        "Folder content",
+    ]
+    assert auto_save_openwebui._PROCESSED_IDS == {
+        "pinned-chat:null-id-one",
+        "pinned-chat:null-id-two",
+        "folder-chat:folder-message",
+    }
